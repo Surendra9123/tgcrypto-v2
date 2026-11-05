@@ -16,14 +16,22 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
+import os
 from setuptools import setup, Extension, find_packages
 
 with open("README.md", encoding="utf-8") as f:
     readme = f.read()
 
+def _read_version():
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "tgcrypto", "version.h")) as f:
+        return re.search(r'TGCRYPTO_VERSION\s+"([^"]+)"', f.read()).group(1)
+
+
 setup(
     name="TgCrypto",
-    version="1.3.0",
+    version=_read_version(),
     description="Fast and Portable Cryptography Extension Library for Pyrogram",
     long_description=readme,
     long_description_content_type="text/markdown",

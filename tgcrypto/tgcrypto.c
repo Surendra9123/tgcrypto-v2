@@ -26,6 +26,7 @@
 #include "ige256.h"
 #include "ctr256.h"
 #include "cbc256.h"
+#include "version.h"
 
 #define DESCRIPTION "Fast and Portable Cryptography Extension Library for Pyrogram\n" \
     "TgCrypto is part of Pyrogram, a Telegram MTProto library for Python\n" \
@@ -281,5 +282,12 @@ static struct PyModuleDef module = {
 };
 
 PyMODINIT_FUNC PyInit_tgcrypto(void) {
-    return PyModule_Create(&module);
+    PyObject *m = PyModule_Create(&module);
+    if (m == NULL)
+        return NULL;
+    if (PyModule_AddStringConstant(m, "__version__", TGCRYPTO_VERSION) < 0) {
+        Py_DECREF(m);
+        return NULL;
+    }
+    return m;
 }
