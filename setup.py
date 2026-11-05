@@ -23,7 +23,7 @@ with open("README.md", encoding="utf-8") as f:
 
 setup(
     name="TgCrypto",
-    version="1.2.5",
+    version="1.3.0",
     description="Fast and Portable Cryptography Extension Library for Pyrogram",
     long_description=readme,
     long_description_content_type="text/markdown",
@@ -73,6 +73,7 @@ setup(
             sources=[
                 "tgcrypto/tgcrypto.c",
                 "tgcrypto/aes256.c",
+                "tgcrypto/aes256_hw.c",
                 "tgcrypto/ige256.c",
                 "tgcrypto/ctr256.c",
                 "tgcrypto/cbc256.c"

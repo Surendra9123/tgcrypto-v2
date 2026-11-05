@@ -18,39 +18,38 @@
  * along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "aes256.h"
+#include "cbc256.h"
 
-uint8_t *cbc256(const uint8_t in[], uint32_t length, const uint8_t key[32], uint8_t iv[16], uint8_t encrypt) {
-    uint8_t *out = (uint8_t *) malloc(length * sizeof(uint8_t));
+static inline void xor16(uint8_t dst[16], const uint8_t a[16], const uint8_t b[16]) {
+    uint64_t x, y, p, q;
+    memcpy(&x, a, 8); memcpy(&y, a + 8, 8);
+    memcpy(&p, b, 8); memcpy(&q, b + 8, 8);
+    x ^= p; y ^= q;
+    memcpy(dst, &x, 8); memcpy(dst + 8, &y, 8);
+}
+
+void cbc256(const uint8_t in[], uint8_t out[], size_t length,
+            const uint8_t key[32], const uint8_t iv[16], uint8_t encrypt) {
+    aes256_key ctx;
+    uint8_t chain[AES_BLOCK_SIZE];
     uint8_t nextIv[AES_BLOCK_SIZE];
-    uint32_t expandedKey[EXPANDED_KEY_SIZE];
-    uint32_t i, j;
+    size_t i;
 
-    memcpy(out, in, length);
+    aes256_key_init(&ctx, key, encrypt ? 0 : 1);
+    memcpy(chain, iv, AES_BLOCK_SIZE);
 
     if (encrypt) {
-        aes256_set_encryption_key(key, expandedKey);
-
         for (i = 0; i < length; i += AES_BLOCK_SIZE) {
-            for (j = 0; j < AES_BLOCK_SIZE; ++j)
-                out[i + j] ^= iv[j];
-
-            aes256_encrypt(&out[i], &out[i], expandedKey);
-            memcpy(iv, &out[i], AES_BLOCK_SIZE);
+            xor16(&out[i], &in[i], chain);
+            aes256_block_encrypt(&ctx, &out[i], &out[i]);
+            memcpy(chain, &out[i], AES_BLOCK_SIZE);
         }
     } else {
-        aes256_set_decryption_key(key, expandedKey);
-
         for (i = 0; i < length; i += AES_BLOCK_SIZE) {
-            memcpy(nextIv, &out[i], AES_BLOCK_SIZE);
-            aes256_decrypt(&out[i], &out[i], expandedKey);
-
-            for (j = 0; j < AES_BLOCK_SIZE; ++j)
-                out[i + j] ^= iv[j];
-
-            memcpy(iv, nextIv, AES_BLOCK_SIZE);
+            memcpy(nextIv, &in[i], AES_BLOCK_SIZE);
+            aes256_block_decrypt(&ctx, &in[i], &out[i]);
+            xor16(&out[i], &out[i], chain);
+            memcpy(chain, nextIv, AES_BLOCK_SIZE);
         }
     }
-
-    return out;
 }

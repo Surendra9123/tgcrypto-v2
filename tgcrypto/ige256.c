@@ -18,33 +18,46 @@
  * along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "aes256.h"
+#include "ige256.h"
 
-uint8_t *ige256(const uint8_t in[], uint32_t length, const uint8_t key[32], const uint8_t iv[32], uint8_t encrypt) {
-    uint8_t *out = (uint8_t *) malloc(length * sizeof(uint8_t));
+static inline void xor16(uint8_t dst[16], const uint8_t a[16], const uint8_t b[16]) {
+    uint64_t x, y, p, q;
+    memcpy(&x, a, 8); memcpy(&y, a + 8, 8);
+    memcpy(&p, b, 8); memcpy(&q, b + 8, 8);
+    x ^= p; y ^= q;
+    memcpy(dst, &x, 8); memcpy(dst + 8, &y, 8);
+}
+
+void ige256(const uint8_t in[], uint8_t out[], size_t length,
+            const uint8_t key[32], const uint8_t iv[32], uint8_t encrypt) {
+    aes256_key ctx;
     uint8_t iv1[AES_BLOCK_SIZE], iv2[AES_BLOCK_SIZE];
     uint8_t chunk[AES_BLOCK_SIZE], buffer[AES_BLOCK_SIZE];
-    uint32_t expandedKey[EXPANDED_KEY_SIZE];
-    uint32_t i, j;
+    size_t i;
 
-    memcpy(encrypt ? iv1 : iv2, (uint8_t *) iv, AES_BLOCK_SIZE);
-    memcpy(encrypt ? iv2 : iv1, (uint8_t *) iv + AES_BLOCK_SIZE, AES_BLOCK_SIZE);
-    (encrypt ? aes256_set_encryption_key : aes256_set_decryption_key)(key, expandedKey);
+    aes256_key_init(&ctx, key, encrypt ? 0 : 1);
+
+    if (encrypt) {
+        memcpy(iv1, iv, AES_BLOCK_SIZE);
+        memcpy(iv2, iv + AES_BLOCK_SIZE, AES_BLOCK_SIZE);
+    } else {
+        memcpy(iv2, iv, AES_BLOCK_SIZE);
+        memcpy(iv1, iv + AES_BLOCK_SIZE, AES_BLOCK_SIZE);
+    }
 
     for (i = 0; i < length; i += AES_BLOCK_SIZE) {
         memcpy(chunk, &in[i], AES_BLOCK_SIZE);
 
-        for (j = 0; j < AES_BLOCK_SIZE; ++j)
-            buffer[j] = in[i + j] ^ iv1[j];
+        xor16(buffer, &in[i], iv1);
 
-        (encrypt ? aes256_encrypt : aes256_decrypt)((uint8_t * ) & buffer, &out[i], expandedKey);
+        if (encrypt)
+            aes256_block_encrypt(&ctx, buffer, &out[i]);
+        else
+            aes256_block_decrypt(&ctx, buffer, &out[i]);
 
-        for (j = 0; j < AES_BLOCK_SIZE; ++j)
-            out[i + j] ^= iv2[j];
+        xor16(&out[i], &out[i], iv2);
 
         memcpy(iv1, &out[i], AES_BLOCK_SIZE);
         memcpy(iv2, chunk, AES_BLOCK_SIZE);
     }
-
-    return out;
 }

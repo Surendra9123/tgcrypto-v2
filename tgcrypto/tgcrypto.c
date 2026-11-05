@@ -31,46 +31,61 @@
     "TgCrypto is part of Pyrogram, a Telegram MTProto library for Python\n" \
     "You can learn more about Pyrogram here: https://pyrogram.org\n"
 
+/* Allocate an uninitialised bytes object to be used as the output buffer,
+ * so the mode routines can write the result directly (no extra copy). */
+static PyObject *alloc_out(Py_ssize_t len) {
+    return PyBytes_FromStringAndSize(NULL, len);
+}
+
 static PyObject *ige(PyObject *args, uint8_t encrypt) {
     Py_buffer data, key, iv;
-    uint8_t *buf;
     PyObject *out;
+    char *buf;
 
     if (!PyArg_ParseTuple(args, "y*y*y*", &data, &key, &iv))
         return NULL;
 
     if (data.len == 0) {
         PyErr_SetString(PyExc_ValueError, "Data must not be empty");
-        return NULL;
+        goto fail;
     }
 
     if (data.len % 16 != 0) {
         PyErr_SetString(PyExc_ValueError, "Data size must match a multiple of 16 bytes");
-        return NULL;
+        goto fail;
     }
 
     if (key.len != 32) {
         PyErr_SetString(PyExc_ValueError, "Key size must be exactly 32 bytes");
-        return NULL;
+        goto fail;
     }
 
     if (iv.len != 32) {
         PyErr_SetString(PyExc_ValueError, "IV size must be exactly 32 bytes");
-        return NULL;
+        goto fail;
     }
 
+    out = alloc_out(data.len);
+    if (!out)
+        goto fail;
+
+    buf = PyBytes_AS_STRING(out);
+
     Py_BEGIN_ALLOW_THREADS
-        buf = ige256(data.buf, data.len, key.buf, iv.buf, encrypt);
+        ige256(data.buf, (uint8_t *) buf, (size_t) data.len, key.buf, iv.buf, encrypt);
     Py_END_ALLOW_THREADS
 
     PyBuffer_Release(&data);
     PyBuffer_Release(&key);
     PyBuffer_Release(&iv);
 
-    out = Py_BuildValue("y#", buf, data.len);
-    free(buf);
-
     return out;
+
+fail:
+    PyBuffer_Release(&data);
+    PyBuffer_Release(&key);
+    PyBuffer_Release(&iv);
+    return NULL;
 }
 
 static PyObject *ige256_encrypt(PyObject *self, PyObject *args) {
@@ -83,91 +98,118 @@ static PyObject *ige256_decrypt(PyObject *self, PyObject *args) {
 
 static PyObject *ctr256_encrypt(PyObject *self, PyObject *args) {
     Py_buffer data, key, iv, state;
-    uint8_t *buf;
     PyObject *out;
+    char *buf;
+    uint8_t state_val;
 
     if (!PyArg_ParseTuple(args, "y*y*y*y*", &data, &key, &iv, &state))
         return NULL;
 
     if (data.len == 0) {
         PyErr_SetString(PyExc_ValueError, "Data must not be empty");
-        return NULL;
+        goto fail;
     }
 
     if (key.len != 32) {
         PyErr_SetString(PyExc_ValueError, "Key size must be exactly 32 bytes");
-        return NULL;
+        goto fail;
     }
 
     if (iv.len != 16) {
         PyErr_SetString(PyExc_ValueError, "IV size must be exactly 16 bytes");
-        return NULL;
+        goto fail;
     }
 
     if (state.len != 1) {
         PyErr_SetString(PyExc_ValueError, "State size must be exactly 1 byte");
-        return NULL;
+        goto fail;
     }
 
-    if (*(uint8_t *) state.buf > 15) {
+    state_val = *(uint8_t *) state.buf;
+
+    if (state_val > 15) {
         PyErr_SetString(PyExc_ValueError, "State value must be in the range [0, 15]");
-        return NULL;
+        goto fail;
     }
+
+    out = alloc_out(data.len);
+    if (!out)
+        goto fail;
+
+    buf = PyBytes_AS_STRING(out);
 
     Py_BEGIN_ALLOW_THREADS
-        buf = ctr256(data.buf, data.len, key.buf, iv.buf, state.buf);
+        ctr256(data.buf, (uint8_t *) buf, (size_t) data.len, key.buf, iv.buf, &state_val);
     Py_END_ALLOW_THREADS
 
     PyBuffer_Release(&data);
     PyBuffer_Release(&key);
     PyBuffer_Release(&iv);
-
-    out = Py_BuildValue("y#", buf, data.len);
-    free(buf);
+    PyBuffer_Release(&state);
 
     return out;
+
+fail:
+    PyBuffer_Release(&data);
+    PyBuffer_Release(&key);
+    PyBuffer_Release(&iv);
+    PyBuffer_Release(&state);
+    return NULL;
+}
+
+static PyObject *ctr256_decrypt(PyObject *self, PyObject *args) {
+    return ctr256_encrypt(self, args);
 }
 
 static PyObject *cbc(PyObject *args, uint8_t encrypt) {
     Py_buffer data, key, iv;
-    uint8_t *buf;
     PyObject *out;
+    char *buf;
 
     if (!PyArg_ParseTuple(args, "y*y*y*", &data, &key, &iv))
         return NULL;
 
     if (data.len == 0) {
         PyErr_SetString(PyExc_ValueError, "Data must not be empty");
-        return NULL;
+        goto fail;
     }
 
     if (data.len % 16 != 0) {
         PyErr_SetString(PyExc_ValueError, "Data size must match a multiple of 16 bytes");
-        return NULL;
+        goto fail;
     }
 
     if (key.len != 32) {
         PyErr_SetString(PyExc_ValueError, "Key size must be exactly 32 bytes");
-        return NULL;
+        goto fail;
     }
 
     if (iv.len != 16) {
         PyErr_SetString(PyExc_ValueError, "IV size must be exactly 16 bytes");
-        return NULL;
+        goto fail;
     }
 
+    out = alloc_out(data.len);
+    if (!out)
+        goto fail;
+
+    buf = PyBytes_AS_STRING(out);
+
     Py_BEGIN_ALLOW_THREADS
-        buf = cbc256(data.buf, data.len, key.buf, iv.buf, encrypt);
+        cbc256(data.buf, (uint8_t *) buf, (size_t) data.len, key.buf, iv.buf, encrypt);
     Py_END_ALLOW_THREADS
 
     PyBuffer_Release(&data);
     PyBuffer_Release(&key);
     PyBuffer_Release(&iv);
 
-    out = Py_BuildValue("y#", buf, data.len);
-    free(buf);
-
     return out;
+
+fail:
+    PyBuffer_Release(&data);
+    PyBuffer_Release(&key);
+    PyBuffer_Release(&iv);
+    return NULL;
 }
 
 static PyObject *cbc256_encrypt(PyObject *self, PyObject *args) {
@@ -217,14 +259,14 @@ PyDoc_STRVAR(
     cbc256_decrypt_docs,
     "cbc256_decrypt(data, key, iv)\n"
     "--\n\n"
-    "AES-256-CBC Encryption"
+    "AES-256-CBC Decryption"
 );
 
 static PyMethodDef methods[] = {
     {"ige256_encrypt", (PyCFunction) ige256_encrypt, METH_VARARGS, ige256_encrypt_docs},
     {"ige256_decrypt", (PyCFunction) ige256_decrypt, METH_VARARGS, ige256_decrypt_docs},
     {"ctr256_encrypt", (PyCFunction) ctr256_encrypt, METH_VARARGS, ctr256_encrypt_docs},
-    {"ctr256_decrypt", (PyCFunction) ctr256_encrypt, METH_VARARGS, ctr256_decrypt_docs},
+    {"ctr256_decrypt", (PyCFunction) ctr256_decrypt, METH_VARARGS, ctr256_decrypt_docs},
     {"cbc256_encrypt", (PyCFunction) cbc256_encrypt, METH_VARARGS, cbc256_encrypt_docs},
     {"cbc256_decrypt", (PyCFunction) cbc256_decrypt, METH_VARARGS, cbc256_decrypt_docs},
     {NULL}

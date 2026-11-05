@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build_wheels:
+    name: Wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.21.3
+        env:
+          CIBW_ARCHS_MACOS: "x86_64 universal2 arm64"
+          CIBW_ARCHS_LINUX: "x86_64 aarch64"
+          CIBW_TEST_REQUIRES: pytest
+          CIBW_TEST_COMMAND: "cd {project} && python -m pytest -q"
+          CIBW_TEST_SKIP: "*-win* *-manylinux_aarch64"
+
+      - name: Build sdist
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python -m pip install --upgrade build
+          python -m build --sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: |
+            ./wheelhouse/*.whl
+            ./dist/*.tar.gz
+
+  github_release:
+    name: Publish GitHub Release
+    needs: build_wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

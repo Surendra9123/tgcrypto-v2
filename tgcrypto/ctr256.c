@@ -18,37 +18,58 @@
  * along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "aes256.h"
+#include "ctr256.h"
 
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+/* Increment a 16-byte big-endian counter in place. */
+static inline void ctr_inc(uint8_t counter[AES_BLOCK_SIZE]) {
+    size_t k = AES_BLOCK_SIZE;
+    while (k--)
+        if (++counter[k])
+            break;
+}
 
-uint8_t *ctr256(const uint8_t in[], uint32_t length, const uint8_t key[32], uint8_t iv[16], uint8_t *state) {
-    uint8_t *out = (uint8_t *) malloc(length * sizeof(uint8_t));
+void ctr256(const uint8_t in[], uint8_t out[], size_t length,
+            const uint8_t key[32], const uint8_t iv[16], uint8_t *state) {
+    aes256_key ctx;
+    uint8_t counter[AES_BLOCK_SIZE];
     uint8_t chunk[AES_BLOCK_SIZE];
-    uint32_t expandedKey[EXPANDED_KEY_SIZE];
-    uint32_t i, j, k;
+    size_t i = 0;
 
-    memcpy(out, in, length);
-    aes256_set_encryption_key(key, expandedKey);
+    aes256_key_init(&ctx, key, 0);
+    memcpy(counter, iv, AES_BLOCK_SIZE);
+    aes256_block_encrypt(&ctx, counter, chunk);
 
-    aes256_encrypt(iv, chunk, expandedKey);
-
-    for (i = 0; i < length; i += AES_BLOCK_SIZE)
-        for (j = 0; j < MIN(length - i, AES_BLOCK_SIZE); ++j) {
-            out[i + j] ^= chunk[(*state)++];
-
-            if (*state >= AES_BLOCK_SIZE)
-                *state = 0;
-
-            if (*state == 0) {
-                k = AES_BLOCK_SIZE;
-                while(k--)
-                    if (++iv[k])
-                        break;
-
-                aes256_encrypt(iv, chunk, expandedKey);
-            }
+    /* Finish the partially-consumed block first (if any). */
+    while (*state != 0 && i < length) {
+        out[i] = in[i] ^ chunk[*state];
+        i++;
+        if (++(*state) >= AES_BLOCK_SIZE) {
+            *state = 0;
+            ctr_inc(counter);
+            aes256_block_encrypt(&ctx, counter, chunk);
         }
+    }
 
-    return out;
+    /* Full blocks: XOR 16 bytes at a time using 64-bit word ops. */
+    while (i + AES_BLOCK_SIZE <= length) {
+        uint64_t a, b, c, d;
+        memcpy(&a, in + i, 8);
+        memcpy(&b, in + i + 8, 8);
+        memcpy(&c, chunk, 8);
+        memcpy(&d, chunk + 8, 8);
+        a ^= c;
+        b ^= d;
+        memcpy(out + i, &a, 8);
+        memcpy(out + i + 8, &b, 8);
+        i += AES_BLOCK_SIZE;
+        ctr_inc(counter);
+        aes256_block_encrypt(&ctx, counter, chunk);
+    }
+
+    /* Remaining tail bytes. */
+    while (i < length) {
+        out[i] = in[i] ^ chunk[*state];
+        i++;
+        (*state)++;
+    }
 }

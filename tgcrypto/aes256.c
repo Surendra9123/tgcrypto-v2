@@ -630,3 +630,33 @@ void aes256_decrypt(const uint8_t in[16], uint8_t out[16], const uint32_t key[60
 
     PUT(out + 12, s3);
 }
+
+/* -------------------------------------------------------------------------
+ * Dispatched AES-256 API (hardware-accelerated when available, software else)
+ * ------------------------------------------------------------------------- */
+
+void aes256_key_init(aes256_key *k, const uint8_t key[32], int need_decrypt) {
+    k->hw = aes256_hw_detect();
+
+    if (k->hw) {
+        aes256_hw_expand(key, k->hw_ek, need_decrypt ? k->hw_dk : NULL);
+    } else {
+        aes256_set_encryption_key(key, k->ek);
+        if (need_decrypt)
+            aes256_set_decryption_key(key, k->dk);
+    }
+}
+
+void aes256_block_encrypt(const aes256_key *k, const uint8_t in[16], uint8_t out[16]) {
+    if (k->hw)
+        aes256_hw_encrypt_block(k->hw_ek, in, out);
+    else
+        aes256_encrypt(in, out, k->ek);
+}
+
+void aes256_block_decrypt(const aes256_key *k, const uint8_t in[16], uint8_t out[16]) {
+    if (k->hw)
+        aes256_hw_decrypt_block(k->hw_ek, in, out);
+    else
+        aes256_decrypt(in, out, k->dk);
+}
