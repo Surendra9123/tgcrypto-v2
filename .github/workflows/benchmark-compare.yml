@@ -66,10 +66,10 @@ jobs:
     needs: compare
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: all
-          merge-multiple: true
       - name: Print combined table
         shell: bash
         run: python bench/report.py

@@ -36,11 +36,19 @@ def main():
     SMALL = 64
     SMALL_CALLS = 1024 * 1024 // SMALL  # 1 MiB total
 
+    version = getattr(tgcrypto, "__version__", None)
+    if version is None:
+        try:
+            import importlib.metadata as _m
+            version = _m.version("tgcrypto")
+        except Exception:
+            version = "unknown"
+
     res = {
         "python": platform.python_version(),
         "platform": platform.platform(),
         "machine": platform.machine(),
-        "tgcrypto_version": getattr(tgcrypto, "__version__", "unknown"),
+        "tgcrypto_version": version,
     }
 
     # Bulk (MB/s)

@@ -4,7 +4,7 @@ import json
 
 
 def main():
-    files = sorted(glob.glob("all/summary*.json"))
+    files = sorted(glob.glob("all/**/summary*.json", recursive=True) + glob.glob("all/summary*.json"))
     print("# TgCrypto: original (1.2.5) vs this (v1.3.1)\n")
     if not files:
         print("_No benchmark artifacts found._")
