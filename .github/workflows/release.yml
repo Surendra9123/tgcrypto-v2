@@ -19,6 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        if: runner.os == 'Linux'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.21.3
         env:
@@ -26,7 +32,7 @@ jobs:
           CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_TEST_REQUIRES: pytest
           CIBW_TEST_COMMAND: "cd {project} && python -m pytest -q"
-          CIBW_TEST_SKIP: "*-win* *-manylinux_aarch64"
+          CIBW_TEST_SKIP: "*-win* *-manylinux_aarch64*"
 
       - name: Build sdist
         if: matrix.os == 'ubuntu-latest'
