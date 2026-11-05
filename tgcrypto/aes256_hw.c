@@ -107,11 +107,19 @@ static void aes256_invmix_column_key(const uint8_t in[16], uint8_t out[16]) {
     int c;
     for (c = 0; c < 4; c++) {
         uint8_t a0 = in[c * 4 + 0], a1 = in[c * 4 + 1], a2 = in[c * 4 + 2], a3 = in[c * 4 + 3];
-        uint8_t t = a0 ^ a1 ^ a2 ^ a3;
-        out[c * 4 + 0] = a0 ^ t ^ XT(a0 ^ a1);
-        out[c * 4 + 1] = a1 ^ t ^ XT(a1 ^ a2);
-        out[c * 4 + 2] = a2 ^ t ^ XT(a2 ^ a3);
-        out[c * 4 + 3] = a3 ^ t ^ XT(a3 ^ a0);
+        /* GF(2^8) xtime */
+        uint8_t b0 = XT(a0), b1 = XT(a1), b2 = XT(a2), b3 = XT(a3);
+        uint8_t c0 = XT(b0), c1 = XT(b1), c2 = XT(b2), c3 = XT(b3);
+        uint8_t d0 = XT(c0), d1 = XT(c1), d2 = XT(c2), d3 = XT(c3);
+        /* 0e=8+4+2, 0b=8+2+1, 0d=8+4+1, 09=8+1 */
+        uint8_t g0 = d0 ^ c0 ^ b0, g1 = d1 ^ c1 ^ b1, g2 = d2 ^ c2 ^ b2, g3 = d3 ^ c3 ^ b3;
+        uint8_t k0 = d0 ^ b0 ^ a0, k1 = d1 ^ b1 ^ a1, k2 = d2 ^ b2 ^ a2, k3 = d3 ^ b3 ^ a3;
+        uint8_t l0 = d0 ^ c0 ^ a0, l1 = d1 ^ c1 ^ a1, l2 = d2 ^ c2 ^ a2, l3 = d3 ^ c3 ^ a3;
+        uint8_t m0 = d0 ^ a0,       m1 = d1 ^ a1,       m2 = d2 ^ a2,       m3 = d3 ^ a3;
+        out[c * 4 + 0] = g0 ^ k1 ^ l2 ^ m3;  /* 0e 0b 0d 09 */
+        out[c * 4 + 1] = m0 ^ g1 ^ k2 ^ l3;  /* 09 0e 0b 0d */
+        out[c * 4 + 2] = l0 ^ m1 ^ g2 ^ k3;  /* 0d 09 0e 0b */
+        out[c * 4 + 3] = k0 ^ l1 ^ m2 ^ g3;  /* 0b 0d 09 0e */
     }
 }
 

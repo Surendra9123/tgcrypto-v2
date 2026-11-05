@@ -656,7 +656,7 @@ void aes256_block_encrypt(const aes256_key *k, const uint8_t in[16], uint8_t out
 
 void aes256_block_decrypt(const aes256_key *k, const uint8_t in[16], uint8_t out[16]) {
     if (k->hw)
-        aes256_hw_decrypt_block(k->hw_ek, in, out);
+        aes256_hw_decrypt_block(k->hw_dk, in, out);
     else
         aes256_decrypt(in, out, k->dk);
 }
