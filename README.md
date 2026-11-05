@@ -16,14 +16,84 @@ cryptographic algorithms Telegram requires, namely:
 - **`AES-256-CTR`** - used for [CDN encrypted files](https://core.telegram.org/cdn).
 - **`AES-256-CBC`** - used for [encrypted passport credentials](https://core.telegram.org/passport).
 
+## Performance
+
+This fork adds a **hardware-accelerated AES-256 backend** (ARMv8 Crypto Extensions on
+Apple Silicon/ARM, AES-NI on x86 via GCC/Clang) with an automatic portable-software
+fallback, and rewrites the mode loops (notably CTR, which now XORs full 16-byte blocks
+instead of processing byte-by-byte).
+
+Measured with GitHub Actions on standard runners, comparing the original PyPI
+**tgcrypto 1.2.5** against this build (**v1.3.1**), Python 3.11. Bulk = 8 MiB buffers;
+small = 64-byte payloads. Throughput in MB/s.
+
+### macOS (Apple Silicon, arm64) — hardware AES
+
+| Operation | original | this | speedup |
+|---|---:|---:|---:|
+| CBC encrypt | 153.6 | 558.8 | **3.6x** |
+| CBC decrypt | 206.4 | 1391.6 | **6.7x** |
+| CTR | 162.9 | 2756.2 | **16.9x** |
+| IGE encrypt | 120.9 | 579.5 | **4.8x** |
+| IGE decrypt | 161.6 | 403.2 | **2.5x** |
+| small 64B (CTR) | 77.9 | 162.7 | **2.1x** |
+
+### Linux (x86_64, glibc) — hardware AES-NI
+
+| Operation | original | this | speedup |
+|---|---:|---:|---:|
+| CBC encrypt | 140.3 | 668.0 | **4.8x** |
+| CBC decrypt | 143.3 | 2206.3 | **15.4x** |
+| CTR | 108.0 | 654.9 | **6.1x** |
+| IGE encrypt | 137.7 | 665.5 | **4.8x** |
+| IGE decrypt | 137.7 | 664.2 | **4.8x** |
+| small 64B (CTR) | 68.6 | 87.2 | **1.3x** |
+
+### Windows (x64) — software fallback (MSVC)
+
+MSVC does not support the function `target("aes")` attribute used to enable AES-NI
+inlining, so the x86 hardware path is compiled only for GCC/Clang. Windows therefore
+uses the portable software AES path; gains come from the faster mode loops and cheaper
+key schedule only.
+
+| Operation | original | this | speedup |
+|---|---:|---:|---:|
+| CBC encrypt | 259.2 | 276.6 | 1.1x |
+| CBC decrypt | 308.1 | 314.3 | 1.0x |
+| CTR | 199.2 | 298.5 | **1.5x** |
+| IGE encrypt | 234.4 | 273.1 | 1.2x |
+| IGE decrypt | 235.6 | 274.2 | 1.2x |
+| small 64B (CTR) | 103.0 | 132.5 | 1.3x |
+
+> **TL;DR** — With hardware AES (Apple Silicon, ARM servers, x86 GCC/Clang builds)
+> bulk throughput improves roughly **2.5x–17x** depending on the mode; CTR and CBC-decrypt
+> benefit most. On Windows (MSVC) the software path still gains ~1.0x–1.5x. Small-payload
+> latency improves modestly across the board (the key schedule is cheaper).
+
+> Reproduce with the **Benchmark Compare** GitHub Actions workflow (`.github/workflows/benchmark-compare.yml`).
+
 ## Requirements
 
 - Python 3.7 or higher.
 
 ## Installation
 
+This fork (v1.3.1) is distributed via GitHub Releases and is **not** on PyPI under the
+`tgcrypto` name (that name belongs to the original 1.2.5). Do not run `pip install tgcrypto`
+if you want this accelerated build.
+
+Install a prebuilt wheel (recommended) from the
+[v1.3.1 release](https://github.com/Surendra9123/tgcrypto-v2/releases/tag/v1.3.1) — pick the
+file matching your OS and Python, e.g.:
+
 ``` bash
-$ pip3 install -U tgcrypto
+$ pip3 install "tgcrypto @ https://github.com/Surendra9123/tgcrypto-v2/releases/download/v1.3.1/tgcrypto-1.3.1-cp313-cp313-win_amd64.whl"
+```
+
+Or build from source directly from the repo (requires a C compiler):
+
+``` bash
+$ pip3 install "git+https://github.com/Surendra9123/tgcrypto-v2.git@v1.3.1"
 ```
 
 ## API
