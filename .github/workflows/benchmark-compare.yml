@@ -1,0 +1,89 @@
+name: Benchmark Compare
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+    paths:
+      - 'bench/**'
+      - '.github/workflows/benchmark-compare.yml'
+
+jobs:
+  compare:
+    name: Original vs This vs kuricrypt (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Benchmark ORIGINAL tgcrypto (PyPI 1.2.5)
+        shell: bash
+        run: |
+          python -m venv /tmp/venv_orig 2>/dev/null || python -m venv venv_orig
+          VENV=$( [ -d /tmp/venv_orig ] && echo /tmp/venv_orig || echo venv_orig )
+          if [ -f "$VENV/bin/python" ]; then PY="$VENV/bin/python"; else PY="$VENV/Scripts/python.exe"; fi
+          "$PY" -m pip install --quiet --upgrade pip
+          "$PY" -m pip install --quiet "tgcrypto==1.2.5"
+          "$PY" -c "import tgcrypto, importlib.metadata as m; print('orig', m.version('tgcrypto'))"
+          "$PY" bench/bench.py > orig.out 2>&1 || { cat orig.out; exit 1; }
+          grep '^BENCH_JSON:' orig.out | sed 's/^BENCH_JSON://' > orig.json
+          cat orig.json
+
+      - name: Install THIS build (repo, v1.3.1)
+        shell: bash
+        run: |
+          python -m venv /tmp/venv_new 2>/dev/null || python -m venv venv_new
+          VENV=$( [ -d /tmp/venv_new ] && echo /tmp/venv_new || echo venv_new )
+          if [ -f "$VENV/bin/python" ]; then PY="$VENV/bin/python"; else PY="$VENV/Scripts/python.exe"; fi
+          "$PY" -m pip install --quiet --upgrade pip setuptools wheel
+          "$PY" -m pip install --quiet .
+          "$PY" -c "import tgcrypto; print('this', getattr(tgcrypto, '__version__', '?'))"
+          "$PY" bench/bench.py > new.out 2>&1 || { cat new.out; exit 1; }
+          grep '^BENCH_JSON:' new.out | sed 's/^BENCH_JSON://' > new.json
+          cat new.json
+
+      - name: Benchmark kuricrypt
+        shell: bash
+        run: |
+          python -m venv /tmp/venv_kuri 2>/dev/null || python -m venv venv_kuri
+          VENV=$( [ -d /tmp/venv_kuri ] && echo /tmp/venv_kuri || echo venv_kuri )
+          if [ -f "$VENV/bin/python" ]; then PY="$VENV/bin/python"; else PY="$VENV/Scripts/python.exe"; fi
+          "$PY" -m pip install --quiet --upgrade pip
+          "$PY" -m pip install --quiet kuricrypt
+          "$PY" -c "import kuricrypt, importlib.metadata as m; print('kuricrypt', m.version('kuricrypt'))"
+          "$PY" bench/bench.py > kuri.out 2>&1 || { cat kuri.out; exit 1; }
+          grep '^KURI_JSON:' kuri.out | sed 's/^KURI_JSON://' > kuri.json || true
+          cat kuri.json
+
+      - name: Compare + report
+        shell: bash
+        run: python bench/compare.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.os }}
+          path: |
+            orig.json
+            new.json
+            kuri.json
+            summary.json
+
+  report:
+    name: Aggregate report
+    needs: compare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+      - name: Print combined table
+        shell: bash
+        run: python bench/report.py
