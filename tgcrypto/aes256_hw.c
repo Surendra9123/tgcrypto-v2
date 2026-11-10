@@ -36,12 +36,21 @@
 #if defined(__aarch64__) && defined(__ARM_FEATURE_CRYPTO)
 #  define HAVE_ARM_AES 1
 #  include <arm_neon.h>
-#elif (defined(__x86_64__) || defined(__i386__)) && (defined(__clang__) || defined(__GNUC__))
-/* x86 AES-NI via target("aes") function attribute (clang / GCC only).
- * MSVC and other compilers fall back to the portable software path. */
+#elif (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86))       && (defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER))
+/* x86 AES-NI via target("aes") function attribute (clang / GCC) or MSVC intrinsics. */
 #  define HAVE_X86_AES 1
 #  include <wmmintrin.h>
 #  include <emmintrin.h>
+#  if defined(_MSC_VER)
+#    include <intrin.h>
+#  endif
+#endif
+
+/* target("aes") is a GCC/Clang attribute; MSVC enables AES-NI intrinsics directly. */
+#if defined(__clang__) || defined(__GNUC__)
+#  define AES_TARGET __attribute__((target("aes")))
+#else
+#  define AES_TARGET
 #endif
 
 /* ---- Portable AES-256 round key schedule (natural byte order) ---------- */
@@ -138,7 +147,13 @@ static void aes256_invmix_column_key(const uint8_t in[16], uint8_t out[16]) {
      static int hw_probe(void) { return 1; }              /* assume presence */
 #  endif
 #elif defined(HAVE_X86_AES)
-#  if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 8)))
+#  if defined(_MSC_VER)
+     static int hw_probe(void) {
+         int info[4];
+         __cpuid(info, 1);
+         return (info[2] & (1 << 25)) != 0; /* AES-NI feature bit */
+     }
+#  elif defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 8)))
      static int hw_probe(void) { __builtin_cpu_init(); return __builtin_cpu_supports("aes"); }
 #  else
      static int hw_probe(void) { return 0; }
@@ -172,8 +187,10 @@ void aes256_hw_expand(const uint8_t key[32], uint8_t hw_ek[240], uint8_t hw_dk[2
 
     if (!build_dk) return;
 #if defined(HAVE_ARM_AES)
-    /* ARM: decryption recipe consumes the *plain* encryption round keys
-     * (see aes256_hw_decrypt_block), so just mirror them. */
+    /* Pre-mixed equivalent inverse cipher keys (removes per-round aesimc):
+     *   dk[0]  = ek[14]
+     *   dk[i]  = InvMixColumns(ek[14-i])  (vaesimc)  for i = 1..13
+     *   dk[14] = ek[0] */
     memcpy(hw_dk, hw_ek, 240);
 #else
     /* x86 AES-NI equivalent inverse cipher:
@@ -214,9 +231,82 @@ void aes256_hw_decrypt_block(const uint8_t rk[240], const uint8_t in[16], uint8_
     vst1q_u8(out, s);
 }
 
+
+void aes256_hw_encrypt_blocks(const uint8_t rk[240], const uint8_t *in, uint8_t *out, size_t nblocks) {
+    size_t b = 0;
+    for (; b + 16 <= nblocks; b += 16) {
+        uint8x16_t s[16];
+        int j; __attribute__((unused)) int r;
+        for (j = 0; j < 16; j++) s[j] = vld1q_u8(in + (b+j)*16);
+        uint8x16_t k0 = vld1q_u8(rk);
+        for (j = 0; j < 16; j++) s[j] = vaeseq_u8(s[j], k0);
+        for (r = 1; r < 14; r++) {
+            uint8x16_t kk = vld1q_u8(rk + r*16);
+            for (j = 0; j < 16; j++) { s[j] = vaesmcq_u8(s[j]); s[j] = vaeseq_u8(s[j], kk); }
+        }
+        uint8x16_t kl = vld1q_u8(rk + 14*16);
+        for (j = 0; j < 16; j++) { s[j] = veorq_u8(s[j], kl); vst1q_u8(out + (b+j)*16, s[j]); }
+    }
+    for (; b + 8 <= nblocks; b += 8) {
+        uint8x16_t s0=vld1q_u8(in+(b+0)*16),s1=vld1q_u8(in+(b+1)*16),s2=vld1q_u8(in+(b+2)*16),s3=vld1q_u8(in+(b+3)*16);
+        uint8x16_t s4=vld1q_u8(in+(b+4)*16),s5=vld1q_u8(in+(b+5)*16),s6=vld1q_u8(in+(b+6)*16),s7=vld1q_u8(in+(b+7)*16);
+        uint8x16_t k0=vld1q_u8(rk);
+        s0=vaeseq_u8(s0,k0);s1=vaeseq_u8(s1,k0);s2=vaeseq_u8(s2,k0);s3=vaeseq_u8(s3,k0);
+        s4=vaeseq_u8(s4,k0);s5=vaeseq_u8(s5,k0);s6=vaeseq_u8(s6,k0);s7=vaeseq_u8(s7,k0);
+        for (int i2=1;i2<14;i2++){ uint8x16_t kk=vld1q_u8(rk+i2*16);
+            s0=vaesmcq_u8(s0);s0=vaeseq_u8(s0,kk); s1=vaesmcq_u8(s1);s1=vaeseq_u8(s1,kk);
+            s2=vaesmcq_u8(s2);s2=vaeseq_u8(s2,kk); s3=vaesmcq_u8(s3);s3=vaeseq_u8(s3,kk);
+            s4=vaesmcq_u8(s4);s4=vaeseq_u8(s4,kk); s5=vaesmcq_u8(s5);s5=vaeseq_u8(s5,kk);
+            s6=vaesmcq_u8(s6);s6=vaeseq_u8(s6,kk); s7=vaesmcq_u8(s7);s7=vaeseq_u8(s7,kk); }
+        uint8x16_t kl=vld1q_u8(rk+14*16);
+        s0=veorq_u8(s0,kl);s1=veorq_u8(s1,kl);s2=veorq_u8(s2,kl);s3=veorq_u8(s3,kl);
+        s4=veorq_u8(s4,kl);s5=veorq_u8(s5,kl);s6=veorq_u8(s6,kl);s7=veorq_u8(s7,kl);
+        vst1q_u8(out+(b+0)*16,s0);vst1q_u8(out+(b+1)*16,s1);vst1q_u8(out+(b+2)*16,s2);vst1q_u8(out+(b+3)*16,s3);
+        vst1q_u8(out+(b+4)*16,s4);vst1q_u8(out+(b+5)*16,s5);vst1q_u8(out+(b+6)*16,s6);vst1q_u8(out+(b+7)*16,s7);
+    }
+    for (; b < nblocks; b++)
+        aes256_hw_encrypt_block(rk, in + b*16, out + b*16);
+}
+
+void aes256_hw_decrypt_blocks(const uint8_t rk[240], const uint8_t *in, uint8_t *out, size_t nblocks) {
+    size_t b = 0;
+    const uint8x16_t zero = vdupq_n_u8(0);
+    for (; b + 8 <= nblocks; b += 8) {
+        uint8x16_t s0 = vld1q_u8(in + (b+0)*16);
+        uint8x16_t s1 = vld1q_u8(in + (b+1)*16);
+        uint8x16_t s2 = vld1q_u8(in + (b+2)*16);
+        uint8x16_t s3 = vld1q_u8(in + (b+3)*16);
+        uint8x16_t s4 = vld1q_u8(in + (b+4)*16);
+        uint8x16_t s5 = vld1q_u8(in + (b+5)*16);
+        uint8x16_t s6 = vld1q_u8(in + (b+6)*16);
+        uint8x16_t s7 = vld1q_u8(in + (b+7)*16);
+        uint8x16_t kl = vld1q_u8(rk + 14*16);
+        s0=veorq_u8(s0,kl); s1=veorq_u8(s1,kl); s2=veorq_u8(s2,kl); s3=veorq_u8(s3,kl);
+        s4=veorq_u8(s4,kl); s5=veorq_u8(s5,kl); s6=veorq_u8(s6,kl); s7=veorq_u8(s7,kl);
+        for (int i = 13; i >= 1; i--) {
+            uint8x16_t kk = vld1q_u8(rk + i*16);
+            s0=vaesimcq_u8(veorq_u8(vaesdq_u8(s0,zero),kk)); s1=vaesimcq_u8(veorq_u8(vaesdq_u8(s1,zero),kk));
+            s2=vaesimcq_u8(veorq_u8(vaesdq_u8(s2,zero),kk)); s3=vaesimcq_u8(veorq_u8(vaesdq_u8(s3,zero),kk));
+            s4=vaesimcq_u8(veorq_u8(vaesdq_u8(s4,zero),kk)); s5=vaesimcq_u8(veorq_u8(vaesdq_u8(s5,zero),kk));
+            s6=vaesimcq_u8(veorq_u8(vaesdq_u8(s6,zero),kk)); s7=vaesimcq_u8(veorq_u8(vaesdq_u8(s7,zero),kk));
+        }
+        uint8x16_t k0 = vld1q_u8(rk);
+        s0=veorq_u8(vaesdq_u8(s0,zero),k0); s1=veorq_u8(vaesdq_u8(s1,zero),k0);
+        s2=veorq_u8(vaesdq_u8(s2,zero),k0); s3=veorq_u8(vaesdq_u8(s3,zero),k0);
+        s4=veorq_u8(vaesdq_u8(s4,zero),k0); s5=veorq_u8(vaesdq_u8(s5,zero),k0);
+        s6=veorq_u8(vaesdq_u8(s6,zero),k0); s7=veorq_u8(vaesdq_u8(s7,zero),k0);
+        vst1q_u8(out+(b+0)*16,s0); vst1q_u8(out+(b+1)*16,s1);
+        vst1q_u8(out+(b+2)*16,s2); vst1q_u8(out+(b+3)*16,s3);
+        vst1q_u8(out+(b+4)*16,s4); vst1q_u8(out+(b+5)*16,s5);
+        vst1q_u8(out+(b+6)*16,s6); vst1q_u8(out+(b+7)*16,s7);
+    }
+    for (; b < nblocks; b++)
+        aes256_hw_decrypt_block(rk, in + b*16, out + b*16);
+}
+
 #elif defined(HAVE_X86_AES)
 
-__attribute__((target("aes")))
+AES_TARGET
 void aes256_hw_encrypt_block(const uint8_t rk[240], const uint8_t in[16], uint8_t out[16]) {
     __m128i s = _mm_loadu_si128((const __m128i *) in);
     s = _mm_xor_si128(s, _mm_loadu_si128((const __m128i *) rk));
@@ -226,7 +316,7 @@ void aes256_hw_encrypt_block(const uint8_t rk[240], const uint8_t in[16], uint8_
     _mm_storeu_si128((__m128i *) out, s);
 }
 
-__attribute__((target("aes")))
+AES_TARGET
 void aes256_hw_decrypt_block(const uint8_t rk[240], const uint8_t in[16], uint8_t out[16]) {
     __m128i s = _mm_loadu_si128((const __m128i *) in);
     s = _mm_xor_si128(s, _mm_loadu_si128((const __m128i *) rk));
@@ -234,6 +324,71 @@ void aes256_hw_decrypt_block(const uint8_t rk[240], const uint8_t in[16], uint8_
         s = _mm_aesdec_si128(s, _mm_loadu_si128((const __m128i *) (rk + i * 16)));
     s = _mm_aesdeclast_si128(s, _mm_loadu_si128((const __m128i *) (rk + 14 * 16)));
     _mm_storeu_si128((__m128i *) out, s);
+}
+
+
+AES_TARGET
+void aes256_hw_encrypt_blocks(const uint8_t rk[240], const uint8_t *in, uint8_t *out, size_t nblocks) {
+    size_t b = 0;
+    for (; b + 8 <= nblocks; b += 8) {
+        __m128i s0 = _mm_loadu_si128((const __m128i*)(in + (b+0)*16));
+        __m128i s1 = _mm_loadu_si128((const __m128i*)(in + (b+1)*16));
+        __m128i s2 = _mm_loadu_si128((const __m128i*)(in + (b+2)*16));
+        __m128i s3 = _mm_loadu_si128((const __m128i*)(in + (b+3)*16));
+        __m128i s4 = _mm_loadu_si128((const __m128i*)(in + (b+4)*16));
+        __m128i s5 = _mm_loadu_si128((const __m128i*)(in + (b+5)*16));
+        __m128i s6 = _mm_loadu_si128((const __m128i*)(in + (b+6)*16));
+        __m128i s7 = _mm_loadu_si128((const __m128i*)(in + (b+7)*16));
+        __m128i k = _mm_loadu_si128((const __m128i*)rk);
+        s0=_mm_xor_si128(s0,k); s1=_mm_xor_si128(s1,k); s2=_mm_xor_si128(s2,k); s3=_mm_xor_si128(s3,k);
+        s4=_mm_xor_si128(s4,k); s5=_mm_xor_si128(s5,k); s6=_mm_xor_si128(s6,k); s7=_mm_xor_si128(s7,k);
+        for (int r = 1; r < 14; r++) {
+            __m128i kk = _mm_loadu_si128((const __m128i*)(rk + r*16));
+            s0=_mm_aesenc_si128(s0,kk); s1=_mm_aesenc_si128(s1,kk); s2=_mm_aesenc_si128(s2,kk); s3=_mm_aesenc_si128(s3,kk);
+            s4=_mm_aesenc_si128(s4,kk); s5=_mm_aesenc_si128(s5,kk); s6=_mm_aesenc_si128(s6,kk); s7=_mm_aesenc_si128(s7,kk);
+        }
+        __m128i kl = _mm_loadu_si128((const __m128i*)(rk + 14*16));
+        s0=_mm_aesenclast_si128(s0,kl); s1=_mm_aesenclast_si128(s1,kl); s2=_mm_aesenclast_si128(s2,kl); s3=_mm_aesenclast_si128(s3,kl);
+        s4=_mm_aesenclast_si128(s4,kl); s5=_mm_aesenclast_si128(s5,kl); s6=_mm_aesenclast_si128(s6,kl); s7=_mm_aesenclast_si128(s7,kl);
+        _mm_storeu_si128((__m128i*)(out+(b+0)*16),s0); _mm_storeu_si128((__m128i*)(out+(b+1)*16),s1);
+        _mm_storeu_si128((__m128i*)(out+(b+2)*16),s2); _mm_storeu_si128((__m128i*)(out+(b+3)*16),s3);
+        _mm_storeu_si128((__m128i*)(out+(b+4)*16),s4); _mm_storeu_si128((__m128i*)(out+(b+5)*16),s5);
+        _mm_storeu_si128((__m128i*)(out+(b+6)*16),s6); _mm_storeu_si128((__m128i*)(out+(b+7)*16),s7);
+    }
+    for (; b < nblocks; b++)
+        aes256_hw_encrypt_block(rk, in + b*16, out + b*16);
+}
+
+AES_TARGET
+void aes256_hw_decrypt_blocks(const uint8_t rk[240], const uint8_t *in, uint8_t *out, size_t nblocks) {
+    size_t b = 0;
+    for (; b + 8 <= nblocks; b += 8) {
+        __m128i s0 = _mm_loadu_si128((const __m128i*)(in + (b+0)*16));
+        __m128i s1 = _mm_loadu_si128((const __m128i*)(in + (b+1)*16));
+        __m128i s2 = _mm_loadu_si128((const __m128i*)(in + (b+2)*16));
+        __m128i s3 = _mm_loadu_si128((const __m128i*)(in + (b+3)*16));
+        __m128i s4 = _mm_loadu_si128((const __m128i*)(in + (b+4)*16));
+        __m128i s5 = _mm_loadu_si128((const __m128i*)(in + (b+5)*16));
+        __m128i s6 = _mm_loadu_si128((const __m128i*)(in + (b+6)*16));
+        __m128i s7 = _mm_loadu_si128((const __m128i*)(in + (b+7)*16));
+        __m128i k = _mm_loadu_si128((const __m128i*)rk);
+        s0=_mm_xor_si128(s0,k); s1=_mm_xor_si128(s1,k); s2=_mm_xor_si128(s2,k); s3=_mm_xor_si128(s3,k);
+        s4=_mm_xor_si128(s4,k); s5=_mm_xor_si128(s5,k); s6=_mm_xor_si128(s6,k); s7=_mm_xor_si128(s7,k);
+        for (int r = 1; r < 14; r++) {
+            __m128i kk = _mm_loadu_si128((const __m128i*)(rk + r*16));
+            s0=_mm_aesdec_si128(s0,kk); s1=_mm_aesdec_si128(s1,kk); s2=_mm_aesdec_si128(s2,kk); s3=_mm_aesdec_si128(s3,kk);
+            s4=_mm_aesdec_si128(s4,kk); s5=_mm_aesdec_si128(s5,kk); s6=_mm_aesdec_si128(s6,kk); s7=_mm_aesdec_si128(s7,kk);
+        }
+        __m128i kl = _mm_loadu_si128((const __m128i*)(rk + 14*16));
+        s0=_mm_aesdeclast_si128(s0,kl); s1=_mm_aesdeclast_si128(s1,kl); s2=_mm_aesdeclast_si128(s2,kl); s3=_mm_aesdeclast_si128(s3,kl);
+        s4=_mm_aesdeclast_si128(s4,kl); s5=_mm_aesdeclast_si128(s5,kl); s6=_mm_aesdeclast_si128(s6,kl); s7=_mm_aesdeclast_si128(s7,kl);
+        _mm_storeu_si128((__m128i*)(out+(b+0)*16),s0); _mm_storeu_si128((__m128i*)(out+(b+1)*16),s1);
+        _mm_storeu_si128((__m128i*)(out+(b+2)*16),s2); _mm_storeu_si128((__m128i*)(out+(b+3)*16),s3);
+        _mm_storeu_si128((__m128i*)(out+(b+4)*16),s4); _mm_storeu_si128((__m128i*)(out+(b+5)*16),s5);
+        _mm_storeu_si128((__m128i*)(out+(b+6)*16),s6); _mm_storeu_si128((__m128i*)(out+(b+7)*16),s7);
+    }
+    for (; b < nblocks; b++)
+        aes256_hw_decrypt_block(rk, in + b*16, out + b*16);
 }
 
 #else
@@ -247,4 +402,15 @@ void aes256_hw_decrypt_block(const uint8_t rk[240], const uint8_t in[16], uint8_
     (void) rk; memcpy(out, in, 16);
 }
 
+#endif
+
+#if !defined(HAVE_ARM_AES) && !defined(HAVE_X86_AES)
+void aes256_hw_encrypt_blocks(const uint8_t rk[240], const uint8_t *in, uint8_t *out, size_t nblocks) {
+    size_t i; (void) rk;
+    for (i = 0; i < nblocks; i++) memcpy(out + i*16, in + i*16, 16);
+}
+void aes256_hw_decrypt_blocks(const uint8_t rk[240], const uint8_t *in, uint8_t *out, size_t nblocks) {
+    size_t i; (void) rk;
+    for (i = 0; i < nblocks; i++) memcpy(out + i*16, in + i*16, 16);
+}
 #endif

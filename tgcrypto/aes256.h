@@ -54,4 +54,8 @@ void aes256_hw_expand(const uint8_t key[32], uint8_t hw_ek[AES256_ROUND_KEYS], u
 void aes256_hw_encrypt_block(const uint8_t hw_ek[AES256_ROUND_KEYS], const uint8_t in[16], uint8_t out[16]);
 void aes256_hw_decrypt_block(const uint8_t hw_dk[AES256_ROUND_KEYS], const uint8_t in[16], uint8_t out[16]);
 
+/* Multi-block (interleaved) variants for bulk throughput. */
+void aes256_hw_encrypt_blocks(const uint8_t hw_ek[AES256_ROUND_KEYS], const uint8_t *in, uint8_t *out, size_t nblocks);
+void aes256_hw_decrypt_blocks(const uint8_t hw_dk[AES256_ROUND_KEYS], const uint8_t *in, uint8_t *out, size_t nblocks);
+
 #endif  // AES256_H
