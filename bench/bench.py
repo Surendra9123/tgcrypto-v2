@@ -1,88 +1,130 @@
-"""Throughput benchmark for tgcrypto. Prints JSON to stdout.
+#!/usr/bin/env python3
+"""Benchmark TgCrypto (this build), the original PyPI tgcrypto, and kuricrypt.
 
-Works with both the original (software-only) tgcrypto 1.2.5 and the
-hardware-accelerated build in this repo, since the public API is identical.
+Emits machine-readable lines so compare.py can build a summary:
+
+    BENCH_JSON:{...}   benchmark of the *imported* ``tgcrypto`` module
+    KURI_JSON:{...}    benchmark of ``kuricrypt`` (if it is importable)
+
+The same benchmark routine (``benchmark_module``) is used for every
+implementation so the numbers are apples-to-apples.  kuricrypt exposes the
+same six-call API (ige/ctr/cbc, 256-bit) as tgcrypto, so it can be dropped in
+transparently.
 """
+
 import json
 import os
-import platform
 import sys
 import time
 
-import tgcrypto
+# ---- benchmark parameters -------------------------------------------------
+
+BULK_SIZE = 8 * 1024 * 1024      # 8 MiB bulk buffers (as in the README tables)
+SMALL_SIZE = 64                  # 64-byte payloads
+REPEATS = 7                      # timed repetitions per operation
+KEY_SIZE = 32                    # AES-256
 
 
-def _bench(fn, nbytes, iters):
-    data = bytes(os.urandom(nbytes))
-    fn(data)  # warmup
+def _throughput(nbytes, seconds):
+    if seconds <= 0:
+        return 0.0
+    return (nbytes / seconds) / 1e6  # MB/s (decimal)
+
+
+def _timeit(fn, *args):
+    # warm-up
+    fn(*args)
     best = None
-    for _ in range(iters):
+    for _ in range(REPEATS):
         t0 = time.perf_counter()
-        fn(data)
+        fn(*args)
         dt = time.perf_counter() - t0
         if best is None or dt < best:
             best = dt
-    return nbytes / best / 1e6  # MB/s
+    return best
+
+
+def benchmark_module(mod):
+    """Run the full benchmark suite against ``mod`` and return a dict.
+
+    ``mod`` must expose the tgcrypto/kuricrypt 256-bit API:
+    ige256_{en,de}crypt, ctr256_{en,de}crypt, cbc256_{en,de}crypt.
+    """
+    bulk = os.urandom(BULK_SIZE)
+    small = os.urandom(SMALL_SIZE)
+
+    key = os.urandom(KEY_SIZE)
+    iv16 = os.urandom(16)
+    iv32 = os.urandom(32)
+
+    results = {}
+
+    # ---- bulk (8 MiB) ----
+    ops = {
+        # ige uses a 32-byte IV
+        "ige_encrypt": lambda: mod.ige256_encrypt(bulk, key, iv32),
+        "ige_decrypt": lambda: mod.ige256_decrypt(_IGE_CT, key, iv32),
+        # ctr uses a 16-byte IV + 1-byte state
+        "ctr": lambda: mod.ctr256_encrypt(bulk, key, iv16, bytes(1)),
+        # cbc uses a 16-byte IV
+        "cbc_encrypt": lambda: mod.cbc256_encrypt(bulk, key, iv16),
+        "cbc_decrypt": lambda: mod.cbc256_decrypt(_CBC_CT, key, iv16),
+    }
+
+    # Pre-compute ciphertexts for the decrypt benchmarks with this module
+    global _IGE_CT, _CBC_CT
+    _IGE_CT = mod.ige256_encrypt(bulk, key, iv32)
+    _CBC_CT = mod.cbc256_encrypt(bulk, key, iv16)
+
+    for name, fn in ops.items():
+        dt = _timeit(fn)
+        results[name] = round(_throughput(BULK_SIZE, dt), 1)
+
+    # ---- small (64 B) ----
+    small_ops = {
+        "small_ctr": lambda: mod.ctr256_encrypt(small, key, iv16, bytes(1)),
+        "small_ige": lambda: mod.ige256_encrypt(small, key, iv32),
+        "small_cbc": lambda: mod.cbc256_encrypt(small, key, iv16),
+    }
+    for name, fn in small_ops.items():
+        dt = _timeit(fn)
+        results[name] = round(_throughput(SMALL_SIZE, dt), 1)
+
+    return results
+
+
+# Module-level placeholders populated inside benchmark_module
+_IGE_CT = b""
+_CBC_CT = b""
 
 
 def main():
-    key = bytes(os.urandom(32))
-    iv16 = bytes(os.urandom(16))
-    iv32 = bytes(os.urandom(32))
-    state = b"\x00"
+    emitted = False
 
-    BIG = 8 * 1024 * 1024
-    BIG_ITERS = 3
-    SMALL = 64
-    SMALL_CALLS = 1024 * 1024 // SMALL  # 1 MiB total
+    # Benchmark the *imported* tgcrypto (original 1.2.5 or this build).
+    try:
+        import tgcrypto  # type: ignore
+    except Exception as exc:
+        print("tgcrypto not available: %s" % exc, file=sys.stderr)
+    else:
+        tg = benchmark_module(tgcrypto)
+        print("BENCH_JSON:" + json.dumps(tg, sort_keys=True))
+        sys.stdout.flush()
+        emitted = True
 
-    version = getattr(tgcrypto, "__version__", None)
-    if version is None:
-        try:
-            import importlib.metadata as _m
-            version = _m.version("tgcrypto")
-        except Exception:
-            version = "unknown"
+    # kuricrypt is optional; benchmark it when installed.
+    try:
+        import kuricrypt  # type: ignore
+    except Exception as exc:
+        print("kuricrypt not available: %s" % exc, file=sys.stderr)
+    else:
+        kuri = benchmark_module(kuricrypt)
+        print("KURI_JSON:" + json.dumps(kuri, sort_keys=True))
+        emitted = True
 
-    res = {
-        "python": platform.python_version(),
-        "platform": platform.platform(),
-        "machine": platform.machine(),
-        "tgcrypto_version": version,
-    }
-
-    # Bulk (MB/s)
-    res["bulk"] = {
-        "cbc_encrypt": _bench(lambda d: tgcrypto.cbc256_encrypt(d, key, iv16), BIG, BIG_ITERS),
-        "cbc_decrypt": _bench(lambda d: tgcrypto.cbc256_decrypt(d, key, iv16), BIG, BIG_ITERS),
-        "ctr_encrypt": _bench(lambda d: tgcrypto.ctr256_encrypt(d, key, iv16, state), BIG, BIG_ITERS),
-        "ige_encrypt": _bench(lambda d: tgcrypto.ige256_encrypt(d, key, iv32), BIG, BIG_ITERS),
-        "ige_decrypt": _bench(lambda d: tgcrypto.ige256_decrypt(d, key, iv32), BIG, BIG_ITERS),
-    }
-
-    # Small-payload: measure per-call throughput over many calls (MB/s)
-    small = bytes(os.urandom(SMALL))
-
-    def small_bench(fn):
-        for _ in range(SMALL_CALLS):
-            fn(small)  # warmup
-        best = None
-        for _ in range(3):
-            t0 = time.perf_counter()
-            for _ in range(SMALL_CALLS):
-                fn(small)
-            dt = time.perf_counter() - t0
-            if best is None or dt < best:
-                best = dt
-        return (SMALL * SMALL_CALLS) / best / 1e6
-
-    res["small_64B"] = {
-        "cbc_encrypt": small_bench(lambda d: tgcrypto.cbc256_encrypt(d, key, iv16)),
-        "ctr_encrypt": small_bench(lambda d: tgcrypto.ctr256_encrypt(d, key, iv16, state)),
-        "ige_encrypt": small_bench(lambda d: tgcrypto.ige256_encrypt(d, key, iv32)),
-    }
-
-    print("BENCH_JSON:" + json.dumps(res))
+    if not emitted:
+        print("no crypto backend importable", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

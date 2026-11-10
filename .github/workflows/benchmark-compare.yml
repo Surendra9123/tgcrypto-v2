@@ -10,7 +10,7 @@ on:
 
 jobs:
   compare:
-    name: Original vs This (${{ matrix.os }})
+    name: Original vs This vs kuricrypt (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -49,6 +49,19 @@ jobs:
           grep '^BENCH_JSON:' new.out | sed 's/^BENCH_JSON://' > new.json
           cat new.json
 
+      - name: Benchmark kuricrypt
+        shell: bash
+        run: |
+          python -m venv /tmp/venv_kuri 2>/dev/null || python -m venv venv_kuri
+          VENV=$( [ -d /tmp/venv_kuri ] && echo /tmp/venv_kuri || echo venv_kuri )
+          if [ -f "$VENV/bin/python" ]; then PY="$VENV/bin/python"; else PY="$VENV/Scripts/python.exe"; fi
+          "$PY" -m pip install --quiet --upgrade pip
+          "$PY" -m pip install --quiet kuricrypt
+          "$PY" -c "import kuricrypt, importlib.metadata as m; print('kuricrypt', m.version('kuricrypt'))"
+          "$PY" bench/bench.py > kuri.out 2>&1 || { cat kuri.out; exit 1; }
+          grep '^KURI_JSON:' kuri.out | sed 's/^KURI_JSON://' > kuri.json || true
+          cat kuri.json
+
       - name: Compare + report
         shell: bash
         run: python bench/compare.py
@@ -59,6 +72,7 @@ jobs:
           path: |
             orig.json
             new.json
+            kuri.json
             summary.json
 
   report:

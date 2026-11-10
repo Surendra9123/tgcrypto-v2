@@ -1,27 +1,63 @@
-"""Aggregate downloaded summary*.json artifacts into a markdown report."""
-import glob
+#!/usr/bin/env python3
+"""Aggregate every ``summary.json`` found under ``all/`` and print a table.
+
+Each summary.json (one per OS in the CI matrix) already contains the
+original / this / kuricrypt throughput columns; this script just groups them
+by platform label and prints a readable report.
+"""
+
 import json
+import os
+import sys
+
+
+def _find_summaries(root="all"):
+    found = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        if "summary.json" in filenames:
+            found.append(os.path.join(dirpath, "summary.json"))
+    return sorted(found)
+
+
+def _fmt(v):
+    if v is None:
+        return "-"
+    return "%.1f" % v
+
+
+def _fmt_x(v):
+    if v is None:
+        return "-"
+    return "%.2fx" % v
 
 
 def main():
-    files = sorted(glob.glob("all/**/summary*.json", recursive=True) + glob.glob("all/summary*.json"))
-    print("# TgCrypto: original (1.2.5) vs this (v1.3.1)\n")
-    if not files:
-        print("_No benchmark artifacts found._")
-        return
-    for f in files:
-        s = json.load(open(f))
-        o, n = s["orig"], s["new"]
-        print(f"## {s['os']}\n")
-        print(f"original {s['orig_ver']}  ->  this {s['new_ver']}\n")
-        print("| metric | original MB/s | this MB/s | speedup |")
-        print("|---|---:|---:|---:|")
-        for sec in ("bulk", "small_64B"):
-            for k in o[sec]:
-                ov, nv = o[sec][k], n[sec][k]
-                print(f"| {sec}/{k} | {ov:.1f} | {nv:.1f} | {nv / ov:.2f}x |")
-        print()
+    summaries = _find_summaries()
+    if not summaries:
+        print("No summary.json files found under ./all", file=sys.stderr)
+        return 1
+
+    for path in summaries:
+        with open(path) as f:
+            data = json.load(f)
+        label = os.path.basename(os.path.dirname(path))
+        print("\n=== %s ===" % label)
+        header = "%-12s %10s %10s %10s %12s %14s" % (
+            "operation", "original", "this", "kuricrypt",
+            "this/orig", "this/kuri")
+        print(header)
+        print("-" * len(header))
+        for row in data.get("rows", []):
+            print("%-12s %10s %10s %10s %12s %14s" % (
+                row["operation"],
+                _fmt(row.get("original")),
+                _fmt(row.get("this")),
+                _fmt(row.get("kuricrypt")),
+                _fmt_x(row.get("speedup_vs_original")),
+                _fmt_x(row.get("speedup_vs_kuricrypt")),
+            ))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

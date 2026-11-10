@@ -23,54 +23,82 @@ Apple Silicon/ARM, AES-NI on x86 via GCC/Clang) with an automatic portable-softw
 fallback, and rewrites the mode loops (notably CTR, which now XORs full 16-byte blocks
 instead of processing byte-by-byte).
 
-Measured with GitHub Actions on standard runners, comparing the original PyPI
-**tgcrypto 1.2.5** against this build (**v1.3.1**), Python 3.11. Bulk = 8 MiB buffers;
-small = 64-byte payloads. Throughput in MB/s.
+The tables below compare three implementations of the same six-call API:
+
+- **original** — the original PyPI **tgcrypto 1.2.5** (pure-software AES)
+- **this** — this accelerated build (**v1.3.1**)
+- **kuricrypt** — [`kurigram-org/kuricrypt`](https://github.com/kurigram-org/kuricrypt),
+  an independent **Rust** implementation of the same primitives
+
+All three are measured with the *same* harness (`bench/bench.py`), so the numbers are
+apples-to-apples. Bulk = 8 MiB buffers; small = 64-byte payloads. Throughput in MB/s
+(decimal). `this/orig` and `this/kuri` are the speedup ratios of this build.
 
 ### macOS (Apple Silicon, arm64) — hardware AES
 
-| Operation | original | this | speedup |
-|---|---:|---:|---:|
-| CBC encrypt | 153.6 | 558.8 | **3.6x** |
-| CBC decrypt | 206.4 | 1391.6 | **6.7x** |
-| CTR | 162.9 | 2756.2 | **16.9x** |
-| IGE encrypt | 120.9 | 579.5 | **4.8x** |
-| IGE decrypt | 161.6 | 403.2 | **2.5x** |
-| small 64B (CTR) | 77.9 | 162.7 | **2.1x** |
+Measured locally on an Apple Silicon (arm64) machine, Python 3.13, median of 5 runs of
+`bench/bench.py`.
+
+| Operation | original | this | kuricrypt | this/orig | this/kuri |
+|---|---:|---:|---:|---:|---:|
+| CBC encrypt | 238.4 | 812.5 | 914.7 | **3.41x** | **0.89x** |
+| CBC decrypt | 309.8 | 3632.2 | 9411.3 | **11.72x** | **0.39x** |
+| CTR | 245.3 | 5145.2 | 7894.2 | **20.98x** | **0.65x** |
+| IGE encrypt | 227.6 | 831.8 | 901.5 | **3.65x** | **0.92x** |
+| IGE decrypt | 230.9 | 584.0 | 910.9 | **2.53x** | **0.64x** |
+| small 64B (CTR) | 102.4 | 192.2 | 139.7 | **1.88x** | **1.38x** |
+| small 64B (IGE) | 128.0 | 219.2 | 170.7 | **1.71x** | **1.28x** |
+| small 64B (CBC) | 128.0 | 219.2 | 153.5 | **1.71x** | **1.43x** |
+
+**Reading the table.** Against the original software tgcrypto 1.2.5 this build is a large
+win everywhere (**2.5x–21x** on bulk, **1.7x–1.9x** on 64-byte payloads). Against **kuricrypt**
+the picture is mixed: kuricrypt is a Rust implementation that vectorises across many blocks,
+so it is *faster on bulk throughput* (this build processes one AES block at a time in its
+hardware path) — this build runs at **0.39x–0.92x** of kuricrypt on 8 MiB buffers. On **small
+64-byte payloads**, however, this build's lower per-call overhead wins (**1.28x–1.43x**), which
+is the common case for MTProto message framing.
 
 ### Linux (x86_64, glibc) — hardware AES-NI
 
-| Operation | original | this | speedup |
-|---|---:|---:|---:|
-| CBC encrypt | 140.3 | 668.0 | **4.8x** |
-| CBC decrypt | 143.3 | 2206.3 | **15.4x** |
-| CTR | 108.0 | 654.9 | **6.1x** |
-| IGE encrypt | 137.7 | 665.5 | **4.8x** |
-| IGE decrypt | 137.7 | 664.2 | **4.8x** |
-| small 64B (CTR) | 68.6 | 87.2 | **1.3x** |
+CI-measured on standard GitHub Actions `ubuntu-22.04` runners (Python 3.11), original vs
+this build. The `kuricrypt` column is filled in by the **Benchmark Compare** workflow on
+CI runners; it is left blank here because it was not measured locally.
+
+| Operation | original | this | kuricrypt | this/orig | this/kuri |
+|---|---:|---:|---:|---:|---:|
+| CBC encrypt | 140.3 | 668.0 | — | **4.8x** | — |
+| CBC decrypt | 143.3 | 2206.3 | — | **15.4x** | — |
+| CTR | 108.0 | 654.9 | — | **6.1x** | — |
+| IGE encrypt | 137.7 | 665.5 | — | **4.8x** | — |
+| IGE decrypt | 137.7 | 664.2 | — | **4.8x** | — |
+| small 64B (CTR) | 68.6 | 87.2 | — | **1.3x** | — |
 
 ### Windows (x64) — software fallback (MSVC)
 
 MSVC does not support the function `target("aes")` attribute used to enable AES-NI
 inlining, so the x86 hardware path is compiled only for GCC/Clang. Windows therefore
 uses the portable software AES path; gains come from the faster mode loops and cheaper
-key schedule only.
+key schedule only. Same caveat applies to the `kuricrypt` column as above.
 
-| Operation | original | this | speedup |
-|---|---:|---:|---:|
-| CBC encrypt | 259.2 | 276.6 | 1.1x |
-| CBC decrypt | 308.1 | 314.3 | 1.0x |
-| CTR | 199.2 | 298.5 | **1.5x** |
-| IGE encrypt | 234.4 | 273.1 | 1.2x |
-| IGE decrypt | 235.6 | 274.2 | 1.2x |
-| small 64B (CTR) | 103.0 | 132.5 | 1.3x |
+| Operation | original | this | kuricrypt | this/orig | this/kuri |
+|---|---:|---:|---:|---:|---:|
+| CBC encrypt | 259.2 | 276.6 | — | 1.1x | — |
+| CBC decrypt | 308.1 | 314.3 | — | 1.0x | — |
+| CTR | 199.2 | 298.5 | — | **1.5x** | — |
+| IGE encrypt | 234.4 | 273.1 | — | 1.2x | — |
+| IGE decrypt | 235.6 | 274.2 | — | 1.2x | — |
+| small 64B (CTR) | 103.0 | 132.5 | — | 1.3x | — |
 
-> **TL;DR** — With hardware AES (Apple Silicon, ARM servers, x86 GCC/Clang builds)
-> bulk throughput improves roughly **2.5x–17x** depending on the mode; CTR and CBC-decrypt
-> benefit most. On Windows (MSVC) the software path still gains ~1.0x–1.5x. Small-payload
-> latency improves modestly across the board (the key schedule is cheaper).
+> **TL;DR** — With hardware AES this build is **2.5x–21x** faster than the original software
+> tgcrypto 1.2.5 on bulk data (CTR and CBC-decrypt benefit most) and ~1.7x–1.9x faster on
+> 64-byte payloads. Compared with **kuricrypt** (Rust, vectorised AES): this build is slower
+> on large-buffer bulk throughput (0.39x–0.92x) but faster on small 64-byte messages
+> (1.28x–1.43x). On Windows (MSVC) only the software path is available, so gains over the
+> original are ~1.0x–1.5x.
 
-> Reproduce with the **Benchmark Compare** GitHub Actions workflow (`.github/workflows/benchmark-compare.yml`).
+> Reproduce with the **Benchmark Compare** GitHub Actions workflow
+> (`.github/workflows/benchmark-compare.yml`), which benchmarks the original, this build,
+> and kuricrypt with the same harness on every runner and emits a combined `summary.json`.
 
 ## Requirements
 

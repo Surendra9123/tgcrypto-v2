@@ -1,31 +1,63 @@
-"""Compare orig.json vs new.json benchmark outputs, print a table, write summary.json."""
+#!/usr/bin/env python3
+"""Build ``summary.json`` from three benchmark JSON files.
+
+Inputs (all optional, produced by bench.py):
+    orig.json  - original PyPI tgcrypto 1.2.5       (BENCH_JSON)
+    new.json   - this fork / accelerated build      (BENCH_JSON)
+    kuri.json  - kuricrypt                           (KURI_JSON)
+
+Output:
+    summary.json with per-operation throughput for each implementation and
+    speedup ratios (this/orig, this/kuri).
+"""
+
 import json
+import os
+
+OPS = [
+    "ige_encrypt", "ige_decrypt",
+    "ctr",
+    "cbc_encrypt", "cbc_decrypt",
+    "small_ctr", "small_ige", "small_cbc",
+]
+
+
+def _load(path):
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        data = json.load(f)
+    # tolerate both raw dict and nested {"results": {...}}
+    if isinstance(data, dict) and "results" in data and isinstance(data["results"], dict):
+        return data["results"]
+    return data
 
 
 def main():
-    o = json.load(open("orig.json"))
-    n = json.load(open("new.json"))
-    print("OS:", n["platform"], "| py", n["python"])
-    print(f"{'metric':20s}{'original':>12s}{'this':>12s}{'speedup':>10s}")
+    orig = _load("orig.json")
+    new = _load("new.json")
+    kuri = _load("kuri.json")
 
-    def row(sec, k):
-        ov = o[sec][k]
-        nv = n[sec][k]
-        print(f"{sec + '/' + k:20s}{ov:12.1f}{nv:12.1f}{nv / ov:9.2f}x")
-
-    for k in o["bulk"]:
-        row("bulk", k)
-    for k in o["small_64B"]:
-        row("small_64B", k)
+    rows = []
+    for op in OPS:
+        row = {"operation": op}
+        o = (orig or {}).get(op)
+        n = (new or {}).get(op)
+        k = (kuri or {}).get(op)
+        row["original"] = o
+        row["this"] = n
+        row["kuricrypt"] = k
+        row["speedup_vs_original"] = round(n / o, 2) if (n and o) else None
+        row["speedup_vs_kuricrypt"] = round(n / k, 2) if (n and k) else None
+        rows.append(row)
 
     summary = {
-        "os": n["platform"],
-        "orig_ver": o["tgcrypto_version"],
-        "new_ver": n["tgcrypto_version"],
-        "orig": o,
-        "new": n,
+        "columns": ["original", "this", "kuricrypt"],
+        "rows": rows,
     }
-    open("summary.json", "w").write(json.dumps(summary))
+    with open("summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
